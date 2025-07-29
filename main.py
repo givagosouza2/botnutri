@@ -6,7 +6,7 @@ import faiss
 
 # Inicializa API
 client = OpenAI(api_key=st.secrets["openai"]["api_key"])
-
+st.write("🔐 API Key carregada:", st.secrets["openai"]["api_key"][:5], "********")
 st.set_page_config(page_title="NutriBot ADA 2019", layout="wide")
 st.title("🤖 NutriBot – baseado no Consenso ADA 2019")
 
