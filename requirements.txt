@@ -1,2 +1,6 @@
 streamlit
 openai
+PyPDF2
+faiss-cpu
+openai
+tiktoken
