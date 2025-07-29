@@ -15,7 +15,7 @@ st.title("🤖 NutriBot – baseado no Consenso ADA 2019")
 def prepare_index(client):
     texto = extract_text_from_pdf("CONSENSO ADA 2019.pdf")
     chunks = split_text(texto, max_tokens=500)
-    embeddings, clean_chunks = embed_chunks(chunks, client)
+    embeddings, clean_chunks = embed_chunks(chunks, _client)
     index = faiss.IndexFlatL2(len(embeddings[0]))
     index.add(embeddings)
     return index, clean_chunks
