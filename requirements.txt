@@ -1,6 +1,5 @@
 streamlit
-openai
-PyPDF2
+openai>=1.0.0
 faiss-cpu
-openai
+PyPDF2
 tiktoken
