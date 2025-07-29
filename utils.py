@@ -1,13 +1,8 @@
 import PyPDF2
 import faiss
 import numpy as np
-import os
 from typing import List
 import tiktoken
-from openai import OpenAI
-
-# Instancia cliente com API key
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def extract_text_from_pdf(pdf_path: str) -> str:
     reader = PyPDF2.PdfReader(pdf_path)
@@ -33,7 +28,7 @@ def split_text(text: str, max_tokens=500) -> List[str]:
         chunks.append(" ".join(current))
     return chunks
 
-def embed_chunks(chunks: List[str]) -> tuple:
+def embed_chunks(chunks: List[str], client) -> tuple:
     embeddings = []
     for chunk in chunks:
         response = client.embeddings.create(
@@ -44,7 +39,7 @@ def embed_chunks(chunks: List[str]) -> tuple:
         embeddings.append(vector)
     return np.array(embeddings).astype("float32"), chunks
 
-def search_similar(query: str, index, chunks: List[str], top_k=4) -> List[str]:
+def search_similar(query: str, index, chunks: List[str], client, top_k=4) -> List[str]:
     response = client.embeddings.create(
         model="text-embedding-3-small",
         input=query
