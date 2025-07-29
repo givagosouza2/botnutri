@@ -1,54 +1,64 @@
 import streamlit as st
-import openai
 import os
+from openai import OpenAI, RateLimitError
 from utils import extract_text_from_pdf, split_text, embed_chunks, search_similar
 import faiss
+
+# Inicializa API
+client = OpenAI(api_key=st.secrets["openai"]["api_key"])
 
 st.set_page_config(page_title="NutriBot ADA 2019", layout="wide")
 st.title("🤖 NutriBot – baseado no Consenso ADA 2019")
 
-openai.api_key = st.secrets["openai"]["api_key"]
-
-# Carregamento e indexação
-@st.cache_resource(show_spinner="Processando o PDF...")
+# Carregamento do PDF e criação de índice
+@st.cache_resource(show_spinner="🔍 Processando o Consenso ADA 2019...")
 def prepare_index():
-    text = extract_text_from_pdf("CONSENSO ADA 2019.pdf")
-    chunks = split_text(text, max_tokens=500)
-    vectors, clean_chunks = embed_chunks(chunks)
-    index = faiss.IndexFlatL2(len(vectors[0]))
-    index.add(vectors)
+    texto = extract_text_from_pdf("CONSENSO ADA 2019.pdf")
+    chunks = split_text(texto, max_tokens=500)
+    embeddings, clean_chunks = embed_chunks(chunks)
+    index = faiss.IndexFlatL2(len(embeddings[0]))
+    index.add(embeddings)
     return index, clean_chunks
 
 index, chunks = prepare_index()
 
+# Entrada do usuário
 user_input = st.text_input("Digite sua pergunta sobre diabetes:")
 
 if st.button("📤 Perguntar ao NutriBot"):
-    if user_input.strip() == "":
-        st.warning("Por favor, digite uma pergunta.")
+    if not user_input.strip():
+        st.warning("Por favor, insira uma pergunta válida.")
     else:
-        # Etapa 1: verificar se é sobre diabetes
-        filtro = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Responda apenas com SIM ou NÃO. A seguinte pergunta está relacionada ao tema diabetes?"},
-                {"role": "user", "content": user_input}
-            ]
-        )
-        if "SIM" in filtro.choices[0].message.content.upper():
-            # Etapa 2: busca nos trechos relevantes do PDF
-            contextos = search_similar(user_input, index, chunks, top_k=4)
-            contexto_unido = "\n\n".join(contextos)
-
-            resposta = openai.ChatCompletion.create(
+        try:
+            # Passo 1: Verifica se é sobre diabetes
+            filtro = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "Você é um assistente que responde apenas com base no conteúdo fornecido. Responda à pergunta com base no seguinte contexto extraído do Consenso ADA 2019:\n\n" + contexto_unido},
+                    {"role": "system", "content": "Responda apenas com 'SIM' ou 'NÃO'. A pergunta a seguir está relacionada ao tema diabetes?"},
                     {"role": "user", "content": user_input}
                 ]
             )
+            is_diabetes = filtro.choices[0].message.content.strip().upper()
 
-            st.markdown("💬 **Resposta:**")
-            st.markdown(resposta.choices[0].message.content)
-        else:
-            st.warning("❌ O NutriBot responde apenas a perguntas sobre **diabetes** com base no conteúdo do Consenso ADA 2019.")
+            if "SIM" in is_diabetes:
+                # Passo 2: Busca nos trechos relevantes
+                contextos = search_similar(user_input, index, chunks, top_k=4)
+                contexto_completo = "\n\n".join(contextos)
+
+                resposta = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": f"Você é um assistente especializado que responde exclusivamente com base no conteúdo fornecido do Consenso ADA 2019. Use apenas as informações abaixo para responder:\n\n{contexto_completo}"},
+                        {"role": "user", "content": user_input}
+                    ]
+                )
+
+                st.markdown("💬 **Resposta baseada no Consenso ADA 2019:**")
+                st.markdown(resposta.choices[0].message.content)
+
+            else:
+                st.warning("❌ O NutriBot responde apenas a perguntas sobre **diabetes** com base no conteúdo do Consenso ADA 2019.")
+        except RateLimitError:
+            st.error("🚫 Limite de requisições atingido. Aguarde um momento e tente novamente.")
+        except Exception as e:
+            st.error(f"⚠️ Erro inesperado: {str(e)}")
