@@ -1,6 +1,7 @@
 import streamlit as st
-import openai
-from openai.error import RateLimitError
+from openai import OpenAI
+from openai import RateLimitError
+
 
 st.set_page_config(
     page_title="NutriBot",
