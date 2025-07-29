@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 from openai import OpenAI
 from openai import RateLimitError
 
@@ -8,18 +7,19 @@ st.set_page_config(
     page_icon="😃",
     layout="wide"
 )
+
 # Cria cliente com a chave da API
 client = OpenAI(api_key=st.secrets["openai"]["api_key"])
 
 st.title("NutriBot")
-input = st.text_input("inserir texto")
+
+user_text = st.text_input("Inserir texto")
+
 if st.button("📤 Enviar avaliação ao ChatGPT"):
     try:
-        user_input = input
-
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": user_input}]
+            messages=[{"role": "user", "content": user_text}]
         )
 
         st.markdown(response.choices[0].message.content)
