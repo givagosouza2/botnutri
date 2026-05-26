@@ -2,13 +2,9 @@ import streamlit as st
 import numpy as np
 import faiss
 
-from openai import OpenAI, RateLimitError
-from utils import (
-    extract_text_from_pdf,
-    split_text,
-    embed_chunks,
-    search_similar
-)
+from pypdf import PdfReader
+from sentence_transformers import SentenceTransformer
+
 
 # =====================================================
 # Configuração da página
@@ -22,65 +18,83 @@ st.set_page_config(
 st.title("🤖 NutriBot – baseado no Consenso ADA 2019")
 
 st.info(
-    "Este sistema responde com base no Consenso ADA 2019. "
-    "As informações têm finalidade educacional e não substituem "
-    "consulta com médico, nutricionista ou outro profissional de saúde."
+    "Este sistema realiza busca semântica no Consenso ADA 2019. "
+    "As informações têm finalidade educacional e não substituem consulta "
+    "com médico, nutricionista ou outro profissional de saúde."
 )
 
+
 # =====================================================
-# Inicialização segura do cliente OpenAI
+# Função para extrair texto do PDF
 # =====================================================
 
-def get_openai_client():
+def extract_text_from_pdf(pdf_path):
+    reader = PdfReader(pdf_path)
+    text = ""
+
+    for page in reader.pages:
+        page_text = page.extract_text()
+        if page_text:
+            text += page_text + "\n"
+
+    return text
+
+
+# =====================================================
+# Função para dividir o texto em trechos
+# =====================================================
+
+def split_text(text, max_chars=1800, overlap=250):
     """
-    Busca a chave da OpenAI nos Secrets do Streamlit.
+    Divide o texto em blocos parcialmente sobrepostos.
 
-    Aceita dois formatos:
-
-    1) Formato com seção:
-       [openai]
-       api_key = "SUA_CHAVE"
-
-    2) Formato simples:
-       OPENAI_API_KEY = "SUA_CHAVE"
+    max_chars: tamanho aproximado de cada trecho.
+    overlap: número aproximado de caracteres repetidos entre trechos.
     """
 
-    api_key = None
+    text = text.replace("\n", " ")
+    words = text.split()
 
-    try:
-        if "openai" in st.secrets:
-            api_key = st.secrets["openai"].get("api_key", None)
+    chunks = []
+    current_chunk = ""
 
-        if api_key is None and "OPENAI_API_KEY" in st.secrets:
-            api_key = st.secrets["OPENAI_API_KEY"]
+    for word in words:
+        if len(current_chunk) + len(word) + 1 <= max_chars:
+            current_chunk += " " + word
+        else:
+            chunks.append(current_chunk.strip())
 
-    except Exception:
-        api_key = None
+            overlap_text = current_chunk[-overlap:]
+            current_chunk = overlap_text + " " + word
 
-    if not api_key:
-        st.error(
-            "Chave da OpenAI não encontrada.\n\n"
-            "Configure os Secrets do Streamlit usando um dos formatos abaixo:\n\n"
-            "Formato 1:\n"
-            "[openai]\n"
-            "api_key = \"SUA_CHAVE_DA_OPENAI\"\n\n"
-            "ou\n\n"
-            "Formato 2:\n"
-            "OPENAI_API_KEY = \"SUA_CHAVE_DA_OPENAI\""
-        )
-        st.stop()
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
 
-    return OpenAI(api_key=api_key)
+    return chunks
 
 
-client = get_openai_client()
+# =====================================================
+# Carregamento do modelo local de embeddings
+# =====================================================
+
+@st.cache_resource(show_spinner="Carregando modelo local de embeddings...")
+def load_model():
+    """
+    Modelo multilíngue leve.
+    Funciona bem para português e não depende da API da OpenAI.
+    """
+    model = SentenceTransformer(
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    )
+    return model
+
 
 # =====================================================
 # Preparação do índice vetorial com FAISS
 # =====================================================
 
 @st.cache_resource(show_spinner="🔍 Processando o Consenso ADA 2019...")
-def prepare_index(_client):
+def prepare_index():
     pdf_path = "CONSENSO ADA 2019.pdf"
 
     texto = extract_text_from_pdf(pdf_path)
@@ -88,47 +102,95 @@ def prepare_index(_client):
     if not texto or len(texto.strip()) == 0:
         raise ValueError(
             "Não foi possível extrair texto do PDF. "
-            "Verifique se o arquivo existe e se contém texto selecionável."
+            "Verifique se o arquivo contém texto selecionável."
         )
 
-    chunks = split_text(texto, max_tokens=500)
+    chunks = split_text(texto)
 
     if not chunks:
         raise ValueError(
             "Nenhum trecho foi gerado a partir do PDF."
         )
 
-    embeddings, clean_chunks = embed_chunks(chunks, _client)
+    model = load_model()
 
-    if not embeddings:
+    embeddings = model.encode(
+        chunks,
+        convert_to_numpy=True,
+        show_progress_bar=False
+    )
+
+    # Correção do erro:
+    # "The truth value of an array with more than one element is ambiguous"
+    if embeddings is None or embeddings.shape[0] == 0:
         raise ValueError(
-            "Nenhum embedding foi gerado. Verifique a função embed_chunks."
+            "Nenhum embedding foi gerado."
         )
 
-    embeddings = np.array(embeddings).astype("float32")
+    embeddings = embeddings.astype("float32")
 
-    if embeddings.ndim != 2:
-        raise ValueError(
-            "Os embeddings precisam estar no formato de matriz 2D."
-        )
+    # Normaliza os vetores para usar similaridade por produto interno
+    faiss.normalize_L2(embeddings)
 
-    index = faiss.IndexFlatL2(embeddings.shape[1])
+    index = faiss.IndexFlatIP(embeddings.shape[1])
     index.add(embeddings)
 
-    return index, clean_chunks
+    return index, chunks, model
 
+
+# =====================================================
+# Busca semântica
+# =====================================================
+
+def search_similar(query, index, chunks, model, top_k=4):
+    query_embedding = model.encode(
+        [query],
+        convert_to_numpy=True,
+        show_progress_bar=False
+    )
+
+    if query_embedding is None or query_embedding.shape[0] == 0:
+        raise ValueError(
+            "Não foi possível gerar embedding para a pergunta."
+        )
+
+    query_embedding = query_embedding.astype("float32")
+    faiss.normalize_L2(query_embedding)
+
+    scores, indices = index.search(query_embedding, top_k)
+
+    results = []
+
+    for score, idx in zip(scores[0], indices[0]):
+        if 0 <= idx < len(chunks):
+            results.append(
+                {
+                    "score": float(score),
+                    "text": chunks[idx]
+                }
+            )
+
+    return results
+
+
+# =====================================================
+# Inicialização do índice
+# =====================================================
 
 try:
-    index, chunks = prepare_index(client)
+    index, chunks, model = prepare_index()
+
 except FileNotFoundError:
     st.error(
         "Arquivo PDF não encontrado. Verifique se o arquivo "
         "'CONSENSO ADA 2019.pdf' está na mesma pasta do main.py."
     )
     st.stop()
+
 except Exception as e:
     st.error(f"Erro ao preparar o índice vetorial: {e}")
     st.stop()
+
 
 # =====================================================
 # Interface do usuário
@@ -138,69 +200,22 @@ st.markdown("### Faça uma pergunta")
 
 user_input = st.text_area(
     "Digite sua pergunta sobre diabetes:",
-    placeholder="Exemplo: Quais são as recomendações nutricionais para pessoas com diabetes tipo 2?"
+    placeholder=(
+        "Exemplo: Quais são as recomendações nutricionais "
+        "para pessoas com diabetes tipo 2?"
+    )
 )
 
 top_k = st.slider(
-    "Número de trechos do documento usados como contexto:",
+    "Número de trechos recuperados do documento:",
     min_value=2,
-    max_value=8,
+    max_value=10,
     value=4
 )
 
-# =====================================================
-# Função para gerar resposta
-# =====================================================
-
-def responder_pergunta(pergunta, top_k=4):
-    contextos = search_similar(
-        pergunta,
-        index,
-        chunks,
-        client,
-        top_k=top_k
-    )
-
-    if not contextos:
-        return (
-            "Não encontrei trechos relevantes no Consenso ADA 2019 para responder à pergunta.",
-            []
-        )
-
-    contexto_completo = "\n\n---\n\n".join(contextos)
-
-    system_prompt = f"""
-Você é o NutriBot, um assistente educacional baseado exclusivamente no Consenso ADA 2019.
-
-Regras obrigatórias:
-1. Responda apenas com base no CONTEXTO fornecido.
-2. Se a resposta não estiver no contexto, diga:
-   "Não encontrei essa informação no Consenso ADA 2019 usado como base."
-3. Não invente informações.
-4. Não forneça diagnóstico individual.
-5. Não prescreva tratamento individualizado.
-6. Oriente o usuário a procurar um profissional de saúde quando a pergunta envolver conduta clínica individual.
-7. Responda em português, com linguagem clara e objetiva.
-
-CONTEXTO:
-{contexto_completo}
-"""
-
-    resposta = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": pergunta}
-        ]
-    )
-
-    texto_resposta = resposta.choices[0].message.content
-
-    return texto_resposta, contextos
 
 # =====================================================
-# Botão principal
+# Execução da busca
 # =====================================================
 
 if st.button("📤 Perguntar ao NutriBot"):
@@ -208,31 +223,38 @@ if st.button("📤 Perguntar ao NutriBot"):
 
     if not pergunta:
         st.warning("Por favor, insira uma pergunta válida.")
+
     else:
         try:
-            resposta, contextos_usados = responder_pergunta(
+            resultados = search_similar(
                 pergunta,
+                index,
+                chunks,
+                model,
                 top_k=top_k
             )
 
-            st.markdown("### 💬 Resposta baseada no Consenso ADA 2019")
-            st.markdown(resposta)
+            if not resultados:
+                st.warning(
+                    "Não encontrei trechos relevantes no documento para essa pergunta."
+                )
 
-            if contextos_usados:
-                with st.expander("📚 Ver trechos do documento usados como contexto"):
-                    for i, trecho in enumerate(contextos_usados, start=1):
-                        st.markdown(f"**Trecho {i}:**")
-                        st.write(trecho)
+            else:
+                st.markdown(
+                    "### 📚 Trechos mais relevantes encontrados no Consenso ADA 2019"
+                )
 
-        except RateLimitError:
-            st.error(
-                "🚫 Limite de requisições atingido. "
-                "Aguarde um pouco e tente novamente."
-            )
+                for i, resultado in enumerate(resultados, start=1):
+                    st.markdown(f"#### Trecho {i}")
+                    st.caption(f"Similaridade: {resultado['score']:.3f}")
+                    st.write(resultado["text"])
+                    st.divider()
+
+                st.warning(
+                    "Nesta versão sem OpenAI, o sistema recupera os trechos "
+                    "mais relevantes, mas ainda não gera uma resposta sintetizada "
+                    "automaticamente."
+                )
 
         except Exception as e:
-            st.error(f"⚠️ Ocorreu um erro inesperado: {e}")
-
-
-
-
+            st.error(f"Erro ao processar a pergunta: {e}")
