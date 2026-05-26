@@ -2,5 +2,5 @@ streamlit
 numpy
 faiss-cpu
 pypdf
-sentence-transformers
-torch
+PyPDF2
+openai
