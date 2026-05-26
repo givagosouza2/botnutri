@@ -1,5 +1,6 @@
 streamlit
-openai>=1.0.0
+numpy
 faiss-cpu
-PyPDF2
-tiktoken
+pypdf
+sentence-transformers
+torch
